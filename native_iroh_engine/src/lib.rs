@@ -135,15 +135,17 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_initializeAndDownload
         rt.spawn(async move {
             reporter.report(1, 0, "Optimizing network routes...", true);
 
-            let node = match iroh::node::Node::memory().spawn().await {
-                Ok(n) => n,
+            let endpoint = match iroh::Endpoint::bind(iroh::endpoint::presets::N0).await {
+                Ok(e) => e,
                 Err(_) => {
                     reporter.report(-1, 0, "Internal network initialization failed.", true);
                     return;
                 }
             };
 
-            let ticket = match ticket_raw.parse::<iroh::ticket::BlobTicket>() {
+            let store = iroh_blobs::store::mem::MemStore::new();
+
+            let ticket = match ticket_raw.parse::<iroh_blobs::ticket::BlobTicket>() {
                 Ok(t) => t,
                 Err(_) => {
                     reporter.report(-1, 0, "Invalid connection token provided.", true);
@@ -153,18 +155,16 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_initializeAndDownload
 
             reporter.report(2, 5, "Connecting directly to remote peer...", true);
 
-            let client = node.client();
-            let blobs = client.blobs();
+            let downloader = store.downloader(&endpoint);
 
-            let mut stream = match blobs.download(ticket.hash(), ticket.node_addr().clone()).await {
+            let download_req = downloader.download(ticket.hash(), Some(ticket.addr().id));
+            let mut stream = match download_req.stream().await {
                 Ok(s) => s,
                 Err(_) => {
                     reporter.report(-1, 0, "Secure pathway negotiation failed.", true);
                     return;
                 }
             };
-
-            let mut discovered_total_size: Option<u64> = None;
 
             loop {
                 tokio::select! {
@@ -174,39 +174,34 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_initializeAndDownload
                     }
                     next_progress = stream.next() => {
                         match next_progress {
-                            Some(Ok(progress)) => match progress {
-                                iroh::rpc_client::blobs::DownloadProgress::Connected => {
+                            Some(progress) => match progress {
+                                iroh_blobs::api::downloader::DownloadProgressItem::TryProvider { .. } => {
                                     reporter.report(3, 10, "Secure peer connection established.", true);
                                 }
-                                iroh::rpc_client::blobs::DownloadProgress::Found { size, .. } => {
-                                    discovered_total_size = Some(size);
+                                iroh_blobs::api::downloader::DownloadProgressItem::Progress(offset) => {
+                                    // Iroh 1.1 doesn't seem to emit `Found { size }` easily in this stream,
+                                    // so we can fallback to an indeterminate progress if size isn't known,
+                                    // but we can just report the offset or a clamped 50%
+                                    let percent = 50;
+                                    reporter.report(4, percent, &format!("Syncing assets securely... ({} bytes)", offset), false);
                                 }
-                                iroh::rpc_client::blobs::DownloadProgress::Progress { offset, .. } => {
-                                    let percent = if let Some(total) = discovered_total_size {
-                                        if total > 0 {
-                                            ((offset as f64 / total as f64) * 100.0).clamp(10.0, 99.0) as i32
-                                        } else {
-                                            50
-                                        }
-                                    } else {
-                                        50
-                                    };
-                                    reporter.report(4, percent, &format!("Syncing assets securely... ({}%)", percent), false);
-                                }
-                                iroh::rpc_client::blobs::DownloadProgress::Done => {
+                                iroh_blobs::api::downloader::DownloadProgressItem::PartComplete { .. } => {
                                     reporter.report(5, 100, "Assets synced successfully.", true);
                                     break;
                                 }
-                                iroh::rpc_client::blobs::DownloadProgress::Abort(err) => {
-                                    reporter.report(-2, 0, &format!("Connection dropped unexpectedly: {}", err), true);
+                                iroh_blobs::api::downloader::DownloadProgressItem::DownloadError => {
+                                    reporter.report(-2, 0, "Connection dropped unexpectedly", true);
                                     break;
                                 }
-                                _ => {}
+                                iroh_blobs::api::downloader::DownloadProgressItem::ProviderFailed { .. } => {
+                                    reporter.report(-2, 0, "Provider failed", true);
+                                    break;
+                                }
+                                iroh_blobs::api::downloader::DownloadProgressItem::Error(err) => {
+                                    reporter.report(-2, 0, &format!("Network stream error: {}", err), true);
+                                    break;
+                                }
                             },
-                            Some(Err(err)) => {
-                                reporter.report(-2, 0, &format!("Network stream error: {}", err), true);
-                                break;
-                            }
                             None => {
                                 reporter.report(5, 100, "Assets synced successfully.", true);
                                 break;
