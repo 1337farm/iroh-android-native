@@ -12,8 +12,9 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import java.security.SecureRandom
 
-class IrohDaemonService : Service(), IrohProgressListener {
+class IrohDaemonService : Service(), IrohTransferListener {
 
     private val CHANNEL_ID = "iroh_sync_channel"
     private val NOTIFICATION_ID = 101
@@ -27,6 +28,7 @@ class IrohDaemonService : Service(), IrohProgressListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CANCEL) {
+            IrohBridge.cancelFetch()
             IrohBridge.cancelDownload()
             stopForegroundSafely(detach = false)
             stopSelf()
@@ -34,8 +36,13 @@ class IrohDaemonService : Service(), IrohProgressListener {
         }
 
         val ticket = intent?.getStringExtra(EXTRA_TICKET) ?: ""
-        val privateStoragePath = filesDir.absolutePath
+        val engineDir = getDir("iroh", Context.MODE_PRIVATE).absolutePath
+        if (!IrohBridge.initialize(engineDir, loadOrCreateSecret())) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
+        val outDir = filesDir.absolutePath + "/p2p"
         val initialNotification = buildProgressNotification("Optimizing network routes...", 0, ongoing = true)
 
         try {
@@ -54,7 +61,7 @@ class IrohDaemonService : Service(), IrohProgressListener {
             return START_NOT_STICKY
         }
 
-        IrohBridge.initializeAndDownload(privateStoragePath, ticket, this)
+        IrohBridge.modelFetch(ticket, outDir, this)
         return START_NOT_STICKY
     }
 
@@ -69,9 +76,31 @@ class IrohDaemonService : Service(), IrohProgressListener {
         }
     }
 
+    override fun onModelMetadata(modelJson: String, fileNamesJson: String) {
+    }
+
+    override fun onFetchComplete(dir: String) {
+        val done = buildProgressNotification("Sync complete: $dir", 100, ongoing = false)
+        notificationManager.notify(NOTIFICATION_ID, done)
+        stopForegroundSafely(detach = true)
+        stopSelf()
+    }
+
     override fun onDestroy() {
-        IrohBridge.cancelDownload()
+        IrohBridge.cancelFetch()
         super.onDestroy()
+    }
+
+    private fun loadOrCreateSecret(): ByteArray {
+        val prefs = getSharedPreferences("iroh_engine", Context.MODE_PRIVATE)
+        val hex = prefs.getString("secret", null)
+        if (hex != null && hex.length == 64) {
+            return hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        }
+        val secret = ByteArray(32)
+        SecureRandom().nextBytes(secret)
+        prefs.edit().putString("secret", secret.joinToString("") { "%02x".format(it) }).apply()
+        return secret
     }
 
     private fun stopForegroundSafely(detach: Boolean) {
