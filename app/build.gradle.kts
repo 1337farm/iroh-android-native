@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -16,8 +18,28 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Deterministic sideload signing: CI runners are ephemeral, so an
+    // auto-generated debug key would give every build a different cert and
+    // rolling installs would fail with UPDATE_INCOMPATIBLE. The committed
+    // keystore below signs every build with the same cert (sideload key,
+    // not a Play key — see keystore.properties).
+    signingConfigs {
+        create("sideload") {
+            val props = Properties()
+            val f = rootProject.file("keystore.properties")
+            if (f.exists()) {
+                f.inputStream().use { props.load(it) }
+            }
+            storeFile = rootProject.file(props.getProperty("storeFile", "keystore/sideload.keystore"))
+            storePassword = props.getProperty("storePassword", "")
+            keyAlias = props.getProperty("keyAlias", "")
+            keyPassword = props.getProperty("keyPassword", "")
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("sideload")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
