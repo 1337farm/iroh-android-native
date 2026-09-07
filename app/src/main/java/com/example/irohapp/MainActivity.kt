@@ -1,6 +1,7 @@
 package com.example.irohapp
 
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
@@ -8,6 +9,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import java.security.SecureRandom
 import kotlin.concurrent.thread
 
@@ -42,6 +44,7 @@ class MainActivity : AppCompatActivity(), IrohTransferListener {
         btn("5. Fetch ticket") { doFetch() }
         btn("6. Merge announcement") { doMerge() }
         btn("7. Known peers") { doPeers() }
+        btn("Start Sync Service") { doStartSyncService() }
         val scroll = ScrollView(this)
         scroll.addView(log)
         root.addView(scroll, LinearLayout.LayoutParams(
@@ -125,6 +128,19 @@ class MainActivity : AppCompatActivity(), IrohTransferListener {
     private fun doPeers() {
         if (!ensureInit()) return
         append("peers: ${IrohBridge.knownPeers().joinToString()}\n")
+    }
+
+    private fun doStartSyncService() {
+        val ticket = ticketInput.text.toString()
+        if (ticket.isBlank()) {
+            append("enter a ticket first\n")
+            return
+        }
+        val intent = Intent(this, IrohDaemonService::class.java).apply {
+            putExtra(IrohDaemonService.EXTRA_TICKET, ticket)
+        }
+        ContextCompat.startForegroundService(this, intent)
+        append("sync service started for ticket...\n")
     }
 
     private fun append(s: String) {
