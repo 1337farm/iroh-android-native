@@ -39,6 +39,56 @@ android {
     }
 }
 
+fun nativeToolchainAvailable(): Boolean {
+    val cargo = runCatching {
+        ProcessBuilder("cargo", "--version")
+            .redirectErrorStream(true)
+            .start()
+            .waitFor() == 0
+    }.getOrDefault(false)
+    val ndkHome = System.getenv("ANDROID_NDK_HOME")
+    val sdkHome = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+    val ndkDir = ndkHome?.let { File(it) }
+        ?: sdkHome?.let { File(it, "ndk") }
+    val hasNdk = ndkDir?.let { dir ->
+        if (dir.name == "ndk") {
+            dir.isDirectory && (dir.list()?.isNotEmpty() == true)
+        } else {
+            dir.isDirectory
+        }
+    } ?: false
+    return cargo && hasNdk
+}
+
+tasks.register<Exec>("buildNativeEngine") {
+    group = "build"
+    description = "Cross-compiles native_iroh_engine into app/src/main/jniLibs via build_android.sh."
+    workingDir = file("../native_iroh_engine")
+    commandLine("./build_android.sh")
+    onlyIf {
+        val requested = gradle.startParameter.taskNames
+        val unitTestsOnly = requested.any { it.contains("test", ignoreCase = true) } &&
+            requested.none {
+                it.contains("assemble", ignoreCase = true) ||
+                    it.contains("install", ignoreCase = true) ||
+                    it.contains("bundle", ignoreCase = true)
+            }
+        if (unitTestsOnly) {
+            logger.warn("buildNativeEngine: unit-test-only invocation; skipping native build (JVM tests do not need the .so).")
+            false
+        } else if (nativeToolchainAvailable()) {
+            true
+        } else {
+            logger.warn("buildNativeEngine: cargo/NDK not available; skipping native build (APK will not bundle libnative_iroh_engine.so).")
+            false
+        }
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn("buildNativeEngine")
+}
+
 dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")

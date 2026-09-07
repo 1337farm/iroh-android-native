@@ -35,7 +35,7 @@ for i in "${!TARGETS[@]}"; do
     ABI="${JNI_FOLDERS[$i]}"
 
     echo "Building for target $TARGET ($ABI)..."
-    cargo ndk -t "$ABI" -p 26 build --release
+    cargo ndk -t "$ABI" --platform 26 build --release
 
     DEST_DIR="$APP_JNI_DIR/$ABI"
     mkdir -p "$DEST_DIR"
