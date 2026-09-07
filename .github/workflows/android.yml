@@ -49,15 +49,15 @@ jobs:
       - name: Grant execute permission
         run: chmod +x gradlew
 
-      - name: Assemble debug APK
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Assemble release APK
+        run: ./gradlew assembleRelease --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: iroh-android-native-Debug-APK
-          path: app/build/outputs/apk/debug/*.apk
+          name: iroh-android-native-Release-APK
+          path: app/build/outputs/apk/release/*.apk
           retention-days: 7
 
       - name: Publish APK release
@@ -68,7 +68,7 @@ jobs:
           set -e
           OUT="$RUNNER_TEMP/apk-release"
           mkdir -p "$OUT"
-          APK="$(find app/build/outputs/apk/debug -name '*.apk' | head -1)"
+          APK="$(find app/build/outputs/apk/release -name '*.apk' | head -1)"
           if [ -z "$APK" ]; then echo "ERROR: no APK to publish"; return 1; fi
           cp "$APK" "$OUT/"
           APK_NAME="$(basename "$APK")"

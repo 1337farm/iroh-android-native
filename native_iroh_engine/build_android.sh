@@ -15,8 +15,8 @@ fi
 
 echo "Using Android NDK: $ANDROID_NDK_HOME"
 
-TARGETS=("aarch64-linux-android" "armv7-linux-androideabi" "x86_64-linux-android")
-JNI_FOLDERS=("arm64-v8a" "armeabi-v7a" "x86_64")
+TARGETS=("aarch64-linux-android")
+JNI_FOLDERS=("arm64-v8a")
 
 echo "Verifying toolchains..."
 for target in "${TARGETS[@]}"; do
