@@ -23,7 +23,9 @@ object IrohBridge {
     external fun ticketInfo(ticket: String): String?
 
     external fun modelPublish(metadataJson: String, files: Array<ByteArray>): String?
+    external fun modelPublishFiles(metadataJson: String, paths: Array<String>, callback: IrohTransferListener): String?
     external fun modelFetch(ticket: String, dir: String, callback: IrohTransferListener)
+    external fun downloadToPath(storageDir: String, ticket: String, fileName: String, callback: IrohTransferListener)
     external fun cancelFetch(): Boolean
 
     external fun searchQuery(keyword: String): Array<String>

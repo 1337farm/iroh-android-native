@@ -640,6 +640,124 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_modelPublish<'local>(
     }
 }
 
+fn publish_files_inner(
+    eng: &Engine,
+    metadata_json: &str,
+    paths: &[String],
+    reporter: Option<&Reporter>,
+) -> Result<String, String> {
+    let report = |pct: i32, msg: String| {
+        if let Some(r) = reporter {
+            r.progress(6, pct, &msg, false);
+        }
+    };
+    let mut v: serde_json::Value =
+        serde_json::from_str(metadata_json).map_err(|_| "bad model json".to_string())?;
+    let names = v
+        .get("files")
+        .and_then(|f| f.as_array())
+        .ok_or_else(|| "metadata missing files".to_string())?;
+    if names.len() != paths.len() || paths.is_empty() || paths.len() > MAX_FILES {
+        return Err("file count mismatch".to_string());
+    }
+    let mut hashes = Vec::with_capacity(paths.len());
+    let mut tickets = Vec::with_capacity(paths.len());
+    let mut sizes = Vec::with_capacity(paths.len());
+    for (i, path) in paths.iter().enumerate() {
+        let size = std::fs::metadata(path)
+            .map_err(|e| format!("stat failed: {e}"))?
+            .len() as i64;
+        if size < 0 || size as usize > MAX_FILE_BYTES {
+            return Err("file too large".to_string());
+        }
+        sizes.push(size);
+        report(
+            (i as i32 * 90) / paths.len() as i32,
+            format!("Importing file {}/{}...", i + 1, paths.len()),
+        );
+        let h = get_runtime().block_on(async {
+            eng.store
+                .blobs()
+                .add_path(path)
+                .with_tag()
+                .await
+                .map(|info| info.hash)
+                .map_err(|e| e.to_string())
+        })?;
+        tickets.push(ticket_for(eng, h));
+        hashes.push(hex_encode(h.as_bytes()));
+    }
+    let obj = v
+        .as_object_mut()
+        .ok_or_else(|| "metadata must be object".to_string())?;
+    obj.insert(
+        "hashes".into(),
+        serde_json::Value::Array(hashes.into_iter().map(serde_json::Value::String).collect()),
+    );
+    obj.insert(
+        "tickets".into(),
+        serde_json::Value::Array(
+            tickets.into_iter().map(serde_json::Value::String).collect(),
+        ),
+    );
+    obj.insert(
+        "sizes".into(),
+        serde_json::Value::Array(sizes.into_iter().map(|s| serde_json::json!(s)).collect()),
+    );
+    let final_json = serde_json::to_string(&v).map_err(|e| e.to_string())?;
+    report(95, "Indexing model...".to_string());
+    let mh = get_runtime().block_on(add_bytes(eng, final_json.clone().into_bytes()))?;
+    index_add(&eng.index, mh, &final_json);
+    report(100, "Published.".to_string());
+    Ok(ticket_for(eng, mh))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_irohapp_IrohBridge_modelPublishFiles<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    metadata_json: JString<'local>,
+    paths: JObjectArray<'local>,
+    callback: JObject<'local>,
+) -> JString<'local> {
+    let res: Option<String> = with_engine(&mut env, |env: &mut JNIEnv<'local>, e: Arc<Engine>| {
+        let json: String = env
+            .get_string(&metadata_json)
+            .map(|s| s.into())
+            .map_err(|e| format!("{e:?}"))?;
+        let n = env
+            .get_array_length(&paths)
+            .map_err(|e| format!("{e:?}"))? as usize;
+        if n == 0 || n > MAX_FILES {
+            return Err("bad file count".to_string());
+        }
+        let mut list = Vec::with_capacity(n);
+        for i in 0..n {
+            let item: JObject = env
+                .get_object_array_element(&paths, i as i32)
+                .map_err(|e| format!("{e:?}"))?;
+            let js: JString = item.into();
+            let p: String = env
+                .get_string(&js)
+                .map(|s| s.into())
+                .map_err(|e| format!("{e:?}"))?;
+            list.push(p);
+        }
+        let rep = match env.new_global_ref(callback) {
+            Ok(r) => match env.get_java_vm() {
+                Ok(vm) => Some(Reporter::new(vm, r, 500)),
+                Err(_) => None,
+            },
+            Err(_) => None,
+        };
+        publish_files_inner(&e, &json, &list, rep.as_ref())
+    });
+    match res {
+        Some(s) => env.new_string(s).unwrap_or_else(|_| null_string()),
+        None => null_string(),
+    }
+}
+
 fn spawn_cancel_flag() -> Arc<AtomicBool> {
     let flag = Arc::new(AtomicBool::new(false));
     let mut guard = FETCH_CANCEL.lock();
@@ -1075,6 +1193,116 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_initializeAndDownload
                 }
             };
             let name = format!("{}.bin", hex_encode(hash.as_bytes()));
+            let dest = std::path::PathBuf::from(&path_str).join(&name);
+            if std::fs::create_dir_all(&path_str)
+                .and_then(|_| std::fs::write(&dest, &data))
+                .is_err()
+            {
+                reporter.progress(-1, 0, "Write failed.", true);
+                return;
+            }
+            reporter.progress(5, 100, "Assets synced successfully.", true);
+            reporter.complete(dest.to_string_lossy().as_ref());
+            clear_cancel_flag(&cancel);
+        });
+    }));
+}
+
+fn sanitize_filename(name: &str) -> Option<String> {
+    let base = std::path::Path::new(name.trim())
+        .file_name()?
+        .to_string_lossy()
+        .into_owned();
+    if base.is_empty()
+        || base.len() > 128
+        || base.starts_with('.')
+        || base.contains('\0')
+    {
+        return None;
+    }
+    Some(base)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_irohapp_IrohBridge_downloadToPath<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    storage_dir: JString<'local>,
+    ticket_str: JString<'local>,
+    file_name: JString<'local>,
+    callback: JObject<'local>,
+) {
+    let _ = catch_unwind(AssertUnwindSafe(move || {
+        let path_str: String = match env.get_string(&storage_dir) {
+            Ok(js) => js.into(),
+            Err(_) => return,
+        };
+        let ticket_raw: String = match env.get_string(&ticket_str) {
+            Ok(js) => js.into(),
+            Err(_) => return,
+        };
+        let name_raw: String = match env.get_string(&file_name) {
+            Ok(js) => js.into(),
+            Err(_) => return,
+        };
+        let jvm = match env.get_java_vm() {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let callback_ref = match env.new_global_ref(callback) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let eng = match ENGINE.lock().clone() {
+            Some(e) => e,
+            None => {
+                let rep = Reporter::new(jvm, callback_ref, 500);
+                rep.progress(-1, 0, "Engine not initialized. Call initialize() first.", true);
+                return;
+            }
+        };
+        let reporter = Arc::new(Reporter::new(jvm, callback_ref, 500));
+        let name = match sanitize_filename(&name_raw) {
+            Some(n) => n,
+            None => {
+                reporter.progress(-1, 0, "Unsafe file name.", true);
+                return;
+            }
+        };
+        let cancel = spawn_cancel_flag();
+        get_runtime().spawn(async move {
+            reporter.progress(1, 0, "Optimizing network routes...", true);
+            let ticket: iroh_blobs::ticket::BlobTicket = match ticket_raw.trim().parse() {
+                Ok(t) => t,
+                Err(_) => {
+                    reporter.progress(-1, 0, "Invalid connection token provided.", true);
+                    return;
+                }
+            };
+            reporter.progress(2, 5, "Connecting directly to remote peer...", true);
+            let hash = match download_blob(&eng, &ticket).await {
+                Ok(h) => h,
+                Err(e) => {
+                    reporter.progress(
+                        -1,
+                        0,
+                        &format!("Secure pathway negotiation failed: {e}"),
+                        true,
+                    );
+                    return;
+                }
+            };
+            if cancel.load(Ordering::Relaxed) {
+                reporter.progress(-3, 0, "Transfer cancelled by user.", true);
+                return;
+            }
+            let data = match read_blob(&eng, hash).await {
+                Ok(d) => d,
+                Err(e) => {
+                    reporter.progress(-1, 0, &format!("Read failed: {e}"), true);
+                    return;
+                }
+            };
             let dest = std::path::PathBuf::from(&path_str).join(&name);
             if std::fs::create_dir_all(&path_str)
                 .and_then(|_| std::fs::write(&dest, &data))
