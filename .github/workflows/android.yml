@@ -1,0 +1,98 @@
+name: Android CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run Android unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+  package-apk:
+    name: apk
+    runs-on: ubuntu-latest
+    needs: [test]
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Assemble debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iroh-android-native-Debug-APK
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 7
+
+      - name: Publish APK release
+        if: github.ref == 'refs/heads/main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          OUT="$RUNNER_TEMP/apk-release"
+          mkdir -p "$OUT"
+          APK="$(find app/build/outputs/apk/debug -name '*.apk' | head -1)"
+          if [ -z "$APK" ]; then echo "ERROR: no APK to publish"; return 1; fi
+          cp "$APK" "$OUT/"
+          APK_NAME="$(basename "$APK")"
+          SHA="$(git rev-parse --short=10 HEAD)"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          SUM="$(sha256sum "$OUT/$APK_NAME" | cut -d' ' -f1)"
+          printf '{"commit":"%s","built_at":"%s","abi":"arm64-v8a","files":{"%s":"%s"}}\n' \
+            "$SHA" "$DATE" "$APK_NAME" "$SUM" > "$OUT/apk-manifest.json"
+          gh release delete latest --yes --cleanup-tag --repo "${{ github.repository }}" 2>/dev/null || true
+          gh release create latest "$OUT/$APK_NAME" "$OUT/apk-manifest.json" --repo "${{ github.repository }}" \
+            --title "iroh-android-native APK (latest)" \
+            --notes "Rolling sideloadable debug APK built from source. Re-published on every green build."
+
+  automerge:
+    name: Auto-merge PR
+    needs: [package-apk]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      pull-requests: write
+      contents: write
+    steps:
+      - name: Merge PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --squash --delete-branch
