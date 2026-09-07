@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -23,7 +25,7 @@ android {
     // not a Play key — see keystore.properties).
     signingConfigs {
         create("sideload") {
-            val props = java.util.Properties()
+            val props = Properties()
             val f = rootProject.file("keystore.properties")
             if (f.exists()) {
                 f.inputStream().use { props.load(it) }
