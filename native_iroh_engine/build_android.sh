@@ -15,6 +15,17 @@ fi
 
 echo "Using Android NDK: $ANDROID_NDK_HOME"
 
+# Shared compile cache across all farm Rust builds (native_iroh_engine
+# here, farm-iroh in 1337farm/flashforge-farm): same $CARGO_HOME registry
+# plus sccache object cache at $SCCACHE_DIR. Skip silently if sccache
+# is not installed.
+if command -v sccache >/dev/null 2>&1; then
+    export RUSTC_WRAPPER=sccache
+    export CARGO_INCREMENTAL=0
+    export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache}"
+    export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-10G}"
+fi
+
 TARGETS=("aarch64-linux-android")
 JNI_FOLDERS=("arm64-v8a")
 
