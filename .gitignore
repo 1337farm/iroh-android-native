@@ -2,3 +2,5 @@ build/
 .gradle/
 app/build/
 app/src/main/jniLibs/
+/target
+native_iroh_engine/target/
