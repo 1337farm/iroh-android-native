@@ -2,6 +2,7 @@ package com.example.irohapp
 
 import android.app.Application
 import android.os.Environment
+import android.util.Log
 import java.io.File
 import java.io.FileWriter
 import java.text.SimpleDateFormat
