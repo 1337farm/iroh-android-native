@@ -26,8 +26,9 @@ if command -v sccache >/dev/null 2>&1; then
     export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-10G}"
 fi
 
-TARGETS=("aarch64-linux-android")
-JNI_FOLDERS=("arm64-v8a")
+# Build for all Android ABIs: arm64-v8a, armeabi-v7a, x86_64
+TARGETS=("aarch64-linux-android" "armv7-linux-androideabi" "i686-linux-android")
+JNI_FOLDERS=("arm64-v8a" "armeabi-v7a" "x86")
 
 echo "Verifying toolchains..."
 for target in "${TARGETS[@]}"; do
@@ -41,6 +42,9 @@ fi
 
 APP_JNI_DIR="../app/src/main/jniLibs"
 
+# Clean previous builds
+rm -rf "$APP_JNI_DIR"/*
+
 for i in "${!TARGETS[@]}"; do
     TARGET="${TARGETS[$i]}"
     ABI="${JNI_FOLDERS[$i]}"
@@ -53,4 +57,5 @@ for i in "${!TARGETS[@]}"; do
     cp "target/$TARGET/release/libnative_iroh_engine.so" "$DEST_DIR/"
 done
 
-echo "SUCCESS: Cross-compilation complete. Binaries installed in $APP_JNI_DIR"
+echo "SUCCESS: Cross-compilation complete for ABIs: ${JNI_FOLDERS[*]}"
+echo "Binaries installed in $APP_JNI_DIR"

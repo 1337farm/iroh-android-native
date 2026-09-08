@@ -88,6 +88,16 @@ fun nativeToolchainAvailable(): Boolean {
     return cargo && hasNdk
 }
 
+fun nativeLibsAlreadyBuilt(): Boolean {
+    val jniLibsDir = File("src/main/jniLibs")
+    if (!jniLibsDir.isDirectory) return false
+    val abiDirs = listOf("arm64-v8a", "armeabi-v7a", "x86")
+    return abiDirs.all { abi ->
+        val lib = File(jniLibsDir, "$abi/libnative_iroh_engine.so")
+        lib.exists()
+    }
+}
+
 tasks.register<Exec>("buildNativeEngine") {
     group = "build"
     description = "Cross-compiles native_iroh_engine into app/src/main/jniLibs via build_android.sh."
@@ -103,6 +113,9 @@ tasks.register<Exec>("buildNativeEngine") {
             }
         if (unitTestsOnly) {
             logger.warn("buildNativeEngine: unit-test-only invocation; skipping native build (JVM tests do not need the .so).")
+            false
+        } else if (nativeLibsAlreadyBuilt()) {
+            logger.info("buildNativeEngine: native libs already built; skipping.")
             false
         } else if (nativeToolchainAvailable()) {
             true

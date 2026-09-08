@@ -49,6 +49,17 @@ jobs:
       - name: Grant execute permission
         run: chmod +x gradlew
 
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Build native engine for all ABIs
+        run: ./native_iroh_engine/build_android.sh
+
       - name: Assemble release APK
         run: ./gradlew assembleRelease --stacktrace
 
@@ -58,6 +69,14 @@ jobs:
         with:
           name: iroh-android-native-Release-APK
           path: app/build/outputs/apk/release/*.apk
+          retention-days: 7
+
+      - name: Upload .so artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: libnative_iroh_engine
+          path: app/src/main/jniLibs/
           retention-days: 7
 
       - name: Publish APK release
