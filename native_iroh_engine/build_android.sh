@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# cargo-ndk runs `cargo metadata` against the INVOKING CWD (--manifest-path
+# does not help), so the script must run from its own directory regardless of
+# how it is called (CI runs ./native_iroh_engine/build_android.sh from the
+# repo root; Gradle runs it with workingDir set to this folder).
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
 
 if [ -z "${ANDROID_NDK_HOME:-}" ]; then
