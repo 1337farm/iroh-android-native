@@ -1,7 +1,14 @@
 package com.example.irohapp
 
 interface IrohTransferListener {
-    fun onTransferProgress(statusCode: Int, progressPct: Int, message: String)
+    fun onTransferProgress(
+        statusCode: Int,
+        progressPct: Int,
+        downloadedBytes: Long,
+        totalBytes: Long,
+        message: String
+    )
+
     fun onModelMetadata(modelJson: String, fileNamesJson: String)
     fun onFetchComplete(dir: String)
 }
@@ -21,6 +28,10 @@ object IrohBridge {
     external fun blobHas(hash: ByteArray): Boolean
     external fun ticketFor(hash: ByteArray): String?
     external fun ticketInfo(ticket: String): String?
+
+    // Download a single blob by ticket and return its raw bytes (null on error);
+    // used for fetching standalone blob payloads (e.g. profile bundles).
+    external fun blobFetch(ticket: String): ByteArray?
 
     external fun modelPublish(metadataJson: String, files: Array<ByteArray>): String?
     external fun modelPublishFiles(metadataJson: String, paths: Array<String>, callback: IrohTransferListener): String?

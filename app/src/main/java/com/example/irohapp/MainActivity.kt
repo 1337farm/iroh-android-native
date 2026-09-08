@@ -147,7 +147,13 @@ class MainActivity : AppCompatActivity(), IrohTransferListener {
         runOnUiThread { log.append(s) }
     }
 
-    override fun onTransferProgress(statusCode: Int, progressPct: Int, message: String) {
+    override fun onTransferProgress(
+        statusCode: Int,
+        progressPct: Int,
+        downloadedBytes: Long,
+        totalBytes: Long,
+        message: String
+    ) {
         append("[$statusCode $progressPct%] $message\n")
     }
 

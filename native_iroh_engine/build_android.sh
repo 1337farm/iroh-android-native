@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# cargo-ndk runs `cargo metadata` against the INVOKING CWD (--manifest-path
+# does not help), so the script must run from its own directory regardless of
+# how it is called (CI runs ./native_iroh_engine/build_android.sh from the
+# repo root; Gradle runs it with workingDir set to this folder).
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
 
 if [ -z "${ANDROID_NDK_HOME:-}" ]; then
@@ -15,8 +21,8 @@ fi
 
 echo "Using Android NDK: $ANDROID_NDK_HOME"
 
-# Shared compile cache across all farm Rust builds (native_iroh_engine
-# here, farm-iroh in 1337farm/flashforge-farm): same $CARGO_HOME registry
+# Shared compile cache across all farm Rust builds (native_iroh_engine here,
+# farm-iroh in 1337farm/flashforge-farm): same $CARGO_HOME registry
 # plus sccache object cache at $SCCACHE_DIR. Skip silently if sccache
 # is not installed.
 if command -v sccache >/dev/null 2>&1; then
@@ -40,22 +46,25 @@ if ! command -v cargo-ndk &> /dev/null; then
     cargo install cargo-ndk
 fi
 
-APP_JNI_DIR="../app/src/main/jniLibs"
+# Output lands in the :irohbridge Android library module, which ships it in
+# both the demo app's APK (via :app -> :irohbridge) and the published AAR.
+# --platform 23 matches the lowest consumer minSdk (FlashForge Farm is minSdk 23).
+LIB_JNI_DIR="../irohbridge/src/main/jniLibs"
 
 # Clean previous builds
-rm -rf "$APP_JNI_DIR"/*
+rm -rf "$LIB_JNI_DIR"/*
 
 for i in "${!TARGETS[@]}"; do
     TARGET="${TARGETS[$i]}"
     ABI="${JNI_FOLDERS[$i]}"
 
     echo "Building for target $TARGET ($ABI)..."
-    cargo ndk -t "$ABI" --platform 26 build --release
+    cargo ndk -t "$ABI" --platform 23 build --release
 
-    DEST_DIR="$APP_JNI_DIR/$ABI"
+    DEST_DIR="$LIB_JNI_DIR/$ABI"
     mkdir -p "$DEST_DIR"
     cp "target/$TARGET/release/libnative_iroh_engine.so" "$DEST_DIR/"
 done
 
 echo "SUCCESS: Cross-compilation complete for ABIs: ${JNI_FOLDERS[*]}"
-echo "Binaries installed in $APP_JNI_DIR"
+echo "Binaries installed in $LIB_JNI_DIR"

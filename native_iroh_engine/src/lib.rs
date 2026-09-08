@@ -152,7 +152,15 @@ impl Reporter {
         }
     }
 
-    fn progress(&self, status_code: i32, progress_pct: i32, message: &str, force: bool) {
+    fn progress(
+        &self,
+        status_code: i32,
+        progress_pct: i32,
+        downloaded: i64,
+        total: i64,
+        message: &str,
+        force: bool,
+    ) {
         if !force {
             let mut last = self.last_reported.lock();
             if last.elapsed() < self.throttle {
@@ -168,10 +176,12 @@ impl Reporter {
             let _ = env.call_method(
                 &self.callback,
                 "onTransferProgress",
-                "(IILjava/lang/String;)V",
+                "(IIJJLjava/lang/String;)V",
                 &[
                     JValue::Int(status_code),
                     JValue::Int(progress_pct),
+                    JValue::Long(downloaded),
+                    JValue::Long(total),
                     JValue::Object(&msg),
                 ],
             );
@@ -502,6 +512,33 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_blobGet<'local>(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_example_irohapp_IrohBridge_blobFetch<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    ticket_str: JString<'local>,
+) -> JByteArray<'local> {
+    let res: Option<Vec<u8>> = with_engine(&mut env, |env: &mut JNIEnv<'local>, e: Arc<Engine>| {
+        let ticket_raw: String = env
+            .get_string(&ticket_str)
+            .map_err(|e| format!("{e:?}"))?
+            .into();
+        let ticket: iroh_blobs::ticket::BlobTicket = ticket_raw
+            .trim()
+            .parse()
+            .map_err(|_| "Invalid connection token provided.".to_string())?;
+        get_runtime()
+            .block_on(async move {
+                let hash = download_blob(&e, &ticket).await?;
+                read_blob(&e, hash).await
+            })
+    });
+    match res {
+        Some(v) => vec_to_jbytes(&mut env, &v).unwrap_or_else(|_| null_bytes()),
+        None => null_bytes(),
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_example_irohapp_IrohBridge_blobHas<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
@@ -648,7 +685,7 @@ fn publish_files_inner(
 ) -> Result<String, String> {
     let report = |pct: i32, msg: String| {
         if let Some(r) = reporter {
-            r.progress(6, pct, &msg, false);
+            r.progress(6, pct, 0, 0, &msg, false);
         }
     };
     let mut v: serde_json::Value =
@@ -825,29 +862,29 @@ async fn run_fetch(
     let ticket: iroh_blobs::ticket::BlobTicket = match ticket_raw.trim().parse() {
         Ok(t) => t,
         Err(_) => {
-            reporter.progress(-1, 0, "Invalid connection token provided.", true);
+            reporter.progress(-1, 0, 0, 0, "Invalid connection token provided.", true);
             return;
         }
     };
-    reporter.progress(1, 0, "Connecting directly to remote peer...", true);
+    reporter.progress(1, 0, 0, 0, "Connecting directly to remote peer...", true);
     let meta_hash = match download_blob(&eng, &ticket).await {
         Ok(h) => h,
         Err(e) => {
-            reporter.progress(-1, 0, &format!("Metadata fetch failed: {e}"), true);
+            reporter.progress(-1, 0, 0, 0, &format!("Metadata fetch failed: {e}"), true);
             return;
         }
     };
     let meta_bytes = match read_blob(&eng, meta_hash).await {
         Ok(b) => b,
         Err(e) => {
-            reporter.progress(-1, 0, &format!("Metadata read failed: {e}"), true);
+            reporter.progress(-1, 0, 0, 0, &format!("Metadata read failed: {e}"), true);
             return;
         }
     };
     let meta_json = match String::from_utf8(meta_bytes) {
         Ok(s) => s,
         Err(_) => {
-            reporter.progress(-1, 0, "Metadata not utf-8.", true);
+            reporter.progress(-1, 0, 0, 0, "Metadata not utf-8.", true);
             return;
         }
     };
@@ -855,14 +892,14 @@ async fn run_fetch(
     let v: serde_json::Value = match serde_json::from_str(&meta_json) {
         Ok(v) => v,
         Err(_) => {
-            reporter.progress(-1, 0, "Bad metadata json.", true);
+            reporter.progress(-1, 0, 0, 0, "Bad metadata json.", true);
             return;
         }
     };
     let names = str_list(&v, "files");
     let tickets = str_list(&v, "tickets");
     if names.is_empty() || names.len() != tickets.len() {
-        reporter.progress(-1, 0, "Metadata missing file tickets.", true);
+        reporter.progress(-1, 0, 0, 0, "Metadata missing file tickets.", true);
         return;
     }
     let total: i64 = v
@@ -873,44 +910,44 @@ async fn run_fetch(
     let names_json = serde_json::to_string(&names).unwrap_or_default();
     reporter.metadata(&meta_json, &names_json);
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        reporter.progress(-1, 0, &format!("mkdir failed: {e}"), true);
+        reporter.progress(-1, 0, 0, 0, &format!("mkdir failed: {e}"), true);
         return;
     }
     let dir_path = std::path::PathBuf::from(&dir);
     let mut downloaded: i64 = 0;
     for (i, name) in names.iter().enumerate() {
         if cancelled() {
-            reporter.progress(-3, 0, "Transfer cancelled by user.", true);
+            reporter.progress(-3, 0, 0, 0, "Transfer cancelled by user.", true);
             return;
         }
         if name.contains('/') || name.contains('\\') || name.contains("..") {
-            reporter.progress(-1, 0, "Unsafe file name in metadata.", true);
+            reporter.progress(-1, 0, 0, 0, "Unsafe file name in metadata.", true);
             return;
         }
         let ft: iroh_blobs::ticket::BlobTicket = match tickets[i].trim().parse() {
             Ok(x) => x,
             Err(_) => {
-                reporter.progress(-1, 0, "Bad file ticket.", true);
+                reporter.progress(-1, 0, 0, 0, "Bad file ticket.", true);
                 return;
             }
         };
         let fh = match download_blob(&eng, &ft).await {
             Ok(h) => h,
             Err(e) => {
-                reporter.progress(-1, 0, &format!("File fetch failed: {e}"), true);
+                reporter.progress(-1, 0, 0, 0, &format!("File fetch failed: {e}"), true);
                 return;
             }
         };
         let data = match read_blob(&eng, fh).await {
             Ok(d) => d,
             Err(e) => {
-                reporter.progress(-1, 0, &format!("File read failed: {e}"), true);
+                reporter.progress(-1, 0, 0, 0, &format!("File read failed: {e}"), true);
                 return;
             }
         };
         downloaded += data.len() as i64;
         if std::fs::write(dir_path.join(name), &data).is_err() {
-            reporter.progress(-1, 0, "Write failed.", true);
+            reporter.progress(-1, 0, 0, 0, "Write failed.", true);
             return;
         }
         let pct = if total > 0 {
@@ -921,11 +958,13 @@ async fn run_fetch(
         reporter.progress(
             4,
             pct,
+            downloaded,
+            total,
             &format!("Syncing assets securely... ({}%)", pct),
             false,
         );
     }
-    reporter.progress(5, 100, "Assets synced successfully.", true);
+    reporter.progress(5, 100, downloaded, total, "Assets synced successfully.", true);
     reporter.complete(&dir);
 }
 
@@ -1152,27 +1191,29 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_initializeAndDownload
             Some(e) => e,
             None => {
                 let rep = Reporter::new(jvm, callback_ref, 500);
-                rep.progress(-1, 0, "Engine not initialized. Call initialize() first.", true);
+                rep.progress(-1, 0, 0, 0, "Engine not initialized. Call initialize() first.", true);
                 return;
             }
         };
         let reporter = Arc::new(Reporter::new(jvm, callback_ref, 500));
         let cancel = spawn_cancel_flag();
         get_runtime().spawn(async move {
-            reporter.progress(1, 0, "Optimizing network routes...", true);
+            reporter.progress(1, 0, 0, 0, "Optimizing network routes...", true);
             let ticket: iroh_blobs::ticket::BlobTicket = match ticket_raw.trim().parse() {
                 Ok(t) => t,
                 Err(_) => {
-                    reporter.progress(-1, 0, "Invalid connection token provided.", true);
+                    reporter.progress(-1, 0, 0, 0, "Invalid connection token provided.", true);
                     return;
                 }
             };
-            reporter.progress(2, 5, "Connecting directly to remote peer...", true);
+            reporter.progress(2, 5, 0, 0, "Connecting directly to remote peer...", true);
             let hash = match download_blob(&eng, &ticket).await {
                 Ok(h) => h,
                 Err(e) => {
                     reporter.progress(
                         -1,
+                        0,
+                        0,
                         0,
                         &format!("Secure pathway negotiation failed: {e}"),
                         true,
@@ -1181,14 +1222,14 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_initializeAndDownload
                 }
             };
             if cancel.load(Ordering::Relaxed) {
-                reporter.progress(-3, 0, "Transfer cancelled by user.", true);
+                reporter.progress(-3, 0, 0, 0, "Transfer cancelled by user.", true);
                 return;
             }
-            reporter.progress(3, 10, "Secure peer connection established.", true);
+            reporter.progress(3, 10, 0, 0, "Secure peer connection established.", true);
             let data = match read_blob(&eng, hash).await {
                 Ok(d) => d,
                 Err(e) => {
-                    reporter.progress(-1, 0, &format!("Read failed: {e}"), true);
+                    reporter.progress(-1, 0, 0, 0, &format!("Read failed: {e}"), true);
                     return;
                 }
             };
@@ -1198,10 +1239,10 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_initializeAndDownload
                 .and_then(|_| std::fs::write(&dest, &data))
                 .is_err()
             {
-                reporter.progress(-1, 0, "Write failed.", true);
+                reporter.progress(-1, 0, 0, 0, "Write failed.", true);
                 return;
             }
-            reporter.progress(5, 100, "Assets synced successfully.", true);
+            reporter.progress(5, 100, 0, 0, "Assets synced successfully.", true);
             reporter.complete(dest.to_string_lossy().as_ref());
             clear_cancel_flag(&cancel);
         });
@@ -1257,7 +1298,7 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_downloadToPath<'local
             Some(e) => e,
             None => {
                 let rep = Reporter::new(jvm, callback_ref, 500);
-                rep.progress(-1, 0, "Engine not initialized. Call initialize() first.", true);
+                rep.progress(-1, 0, 0, 0, "Engine not initialized. Call initialize() first.", true);
                 return;
             }
         };
@@ -1265,26 +1306,28 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_downloadToPath<'local
         let name = match sanitize_filename(&name_raw) {
             Some(n) => n,
             None => {
-                reporter.progress(-1, 0, "Unsafe file name.", true);
+                reporter.progress(-1, 0, 0, 0, "Unsafe file name.", true);
                 return;
             }
         };
         let cancel = spawn_cancel_flag();
         get_runtime().spawn(async move {
-            reporter.progress(1, 0, "Optimizing network routes...", true);
+            reporter.progress(1, 0, 0, 0, "Optimizing network routes...", true);
             let ticket: iroh_blobs::ticket::BlobTicket = match ticket_raw.trim().parse() {
                 Ok(t) => t,
                 Err(_) => {
-                    reporter.progress(-1, 0, "Invalid connection token provided.", true);
+                    reporter.progress(-1, 0, 0, 0, "Invalid connection token provided.", true);
                     return;
                 }
             };
-            reporter.progress(2, 5, "Connecting directly to remote peer...", true);
+            reporter.progress(2, 5, 0, 0, "Connecting directly to remote peer...", true);
             let hash = match download_blob(&eng, &ticket).await {
                 Ok(h) => h,
                 Err(e) => {
                     reporter.progress(
                         -1,
+                        0,
+                        0,
                         0,
                         &format!("Secure pathway negotiation failed: {e}"),
                         true,
@@ -1293,13 +1336,13 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_downloadToPath<'local
                 }
             };
             if cancel.load(Ordering::Relaxed) {
-                reporter.progress(-3, 0, "Transfer cancelled by user.", true);
+                reporter.progress(-3, 0, 0, 0, "Transfer cancelled by user.", true);
                 return;
             }
             let data = match read_blob(&eng, hash).await {
                 Ok(d) => d,
                 Err(e) => {
-                    reporter.progress(-1, 0, &format!("Read failed: {e}"), true);
+                    reporter.progress(-1, 0, 0, 0, &format!("Read failed: {e}"), true);
                     return;
                 }
             };
@@ -1308,10 +1351,10 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_downloadToPath<'local
                 .and_then(|_| std::fs::write(&dest, &data))
                 .is_err()
             {
-                reporter.progress(-1, 0, "Write failed.", true);
+                reporter.progress(-1, 0, 0, 0, "Write failed.", true);
                 return;
             }
-            reporter.progress(5, 100, "Assets synced successfully.", true);
+            reporter.progress(5, 100, 0, 0, "Assets synced successfully.", true);
             reporter.complete(dest.to_string_lossy().as_ref());
             clear_cancel_flag(&cancel);
         });

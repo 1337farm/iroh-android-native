@@ -21,3 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "iroh-android-native"
 include(":app")
+include(":irohbridge")

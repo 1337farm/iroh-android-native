@@ -65,7 +65,13 @@ class IrohDaemonService : Service(), IrohTransferListener {
         return START_NOT_STICKY
     }
 
-    override fun onTransferProgress(statusCode: Int, progressPct: Int, message: String) {
+    override fun onTransferProgress(
+        statusCode: Int,
+        progressPct: Int,
+        downloadedBytes: Long,
+        totalBytes: Long,
+        message: String
+    ) {
         val isFinished = (statusCode == 5 || statusCode < 0)
         val updatedNotification = buildProgressNotification(message, progressPct, ongoing = !isFinished)
         notificationManager.notify(NOTIFICATION_ID, updatedNotification)
