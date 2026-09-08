@@ -10,6 +10,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.example.irohapp.EngineSecret
 import java.security.SecureRandom
 import kotlin.concurrent.thread
 
@@ -55,23 +56,11 @@ class MainActivity : AppCompatActivity(), IrohTransferListener {
     private fun engineDir() = getDir("iroh", Context.MODE_PRIVATE).absolutePath
 
     private fun ensureInit(): Boolean {
-        if (!IrohBridge.initialize(engineDir(), loadOrCreateSecret())) {
+        if (!IrohBridge.initialize(engineDir(), EngineSecret.loadOrCreate(this))) {
             append("initialize failed\n")
             return false
         }
         return true
-    }
-
-    private fun loadOrCreateSecret(): ByteArray {
-        val prefs = getSharedPreferences("iroh_engine", Context.MODE_PRIVATE)
-        val hex = prefs.getString("secret", null)
-        if (hex != null && hex.length == 64) {
-            return hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-        }
-        val secret = ByteArray(32)
-        SecureRandom().nextBytes(secret)
-        prefs.edit().putString("secret", secret.joinToString("") { "%02x".format(it) }).apply()
-        return secret
     }
 
     private fun doInit() {

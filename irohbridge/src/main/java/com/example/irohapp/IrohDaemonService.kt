@@ -12,7 +12,6 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import java.security.SecureRandom
 
 class IrohDaemonService : Service(), IrohTransferListener {
 
@@ -37,7 +36,7 @@ class IrohDaemonService : Service(), IrohTransferListener {
 
         val ticket = intent?.getStringExtra(EXTRA_TICKET) ?: ""
         val engineDir = getDir("iroh", Context.MODE_PRIVATE).absolutePath
-        if (!IrohBridge.initialize(engineDir, loadOrCreateSecret())) {
+        if (!IrohBridge.initialize(engineDir, EngineSecret.loadOrCreate(this))) {
             stopSelf()
             return START_NOT_STICKY
         }
@@ -95,18 +94,6 @@ class IrohDaemonService : Service(), IrohTransferListener {
     override fun onDestroy() {
         IrohBridge.cancelFetch()
         super.onDestroy()
-    }
-
-    private fun loadOrCreateSecret(): ByteArray {
-        val prefs = getSharedPreferences("iroh_engine", Context.MODE_PRIVATE)
-        val hex = prefs.getString("secret", null)
-        if (hex != null && hex.length == 64) {
-            return hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-        }
-        val secret = ByteArray(32)
-        SecureRandom().nextBytes(secret)
-        prefs.edit().putString("secret", secret.joinToString("") { "%02x".format(it) }).apply()
-        return secret
     }
 
     private fun stopForegroundSafely(detach: Boolean) {
