@@ -10,7 +10,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import com.example.irohapp.EngineSecret
 import java.security.SecureRandom
 import kotlin.concurrent.thread
 
