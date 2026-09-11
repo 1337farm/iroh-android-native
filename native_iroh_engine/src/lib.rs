@@ -448,6 +448,10 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_shutdown<'local>(
     if let Some(e) = eng {
         get_runtime().block_on(e.endpoint.close());
     }
+    if let Some(router) = PAIR_ROUTER.lock().take() {
+        let _ = get_runtime().block_on(router.shutdown());
+    }
+    pair_tokens().write().clear();
     *FETCH_CANCEL.lock() = None;
 }
 
@@ -1359,4 +1363,292 @@ pub extern "system" fn Java_com_example_irohapp_IrohBridge_downloadToPath<'local
             clear_cancel_flag(&cancel);
         });
     }));
+}
+
+// ---- USB reverse-pairing (farm/pair) ----
+
+static PAIR_ROUTER: Mutex<Option<iroh::protocol::Router>> = Mutex::new(None);
+static PAIR_TOKENS: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+
+fn pair_tokens() -> &'static RwLock<HashSet<String>> {
+    PAIR_TOKENS.get_or_init(|| RwLock::new(HashSet::new()))
+}
+
+const PAIR_BEACON_MAX_BYTES: usize = 4096;
+const PAIR_RESPONSE_MAX_BYTES: usize = 65536;
+const PAIR_IO_TIMEOUT_SECS: u64 = 30;
+
+fn is_hex64(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit())
+}
+
+#[derive(Debug)]
+struct PairAcceptHandler {
+    jvm: JavaVM,
+    callback: GlobalRef,
+}
+
+impl PairAcceptHandler {
+    fn report(&self, peer_hex: &str, token_hex: &str, ok: bool) {
+        if let Ok(mut env) = self.jvm.attach_current_thread_as_daemon() {
+            let peer: JObject = match env.new_string(peer_hex) {
+                Ok(s) => s.into(),
+                Err(_) => return,
+            };
+            let tok: JObject = match env.new_string(token_hex) {
+                Ok(s) => s.into(),
+                Err(_) => return,
+            };
+            let _ = env.call_method(
+                &self.callback,
+                "onPairResult",
+                "(Ljava/lang/String;Ljava/lang/String;Z)V",
+                &[
+                    JValue::Object(&peer),
+                    JValue::Object(&tok),
+                    JValue::Bool(if ok { JNI_TRUE } else { JNI_FALSE }),
+                ],
+            );
+            if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_clear();
+            }
+        }
+    }
+}
+
+impl iroh::protocol::ProtocolHandler for PairAcceptHandler {
+    async fn accept(
+        &self,
+        conn: iroh::endpoint::Connection,
+    ) -> Result<(), iroh::protocol::AcceptError> {
+        let peer_hex = hex_encode(conn.remote_id().as_bytes());
+        let outcome = accept_beacon(&conn).await;
+        let (tx, token, known) = match outcome {
+            Ok((send, t)) => {
+                let known = pair_tokens().read().contains(&t);
+                (Some(send), t, known)
+            }
+            Err(_) => (None, String::new(), false),
+        };
+        let ok = known && is_hex64(&token);
+        let resp = if ok { "{\"ok\":true}" } else { "{\"ok\":false}" };
+        if let Some(mut send) = tx {
+            let _ = write_response(&mut send, resp).await;
+        }
+        self.report(&peer_hex, if ok { &token } else { "" }, ok);
+        Ok(())
+    }
+}
+
+async fn accept_beacon(
+    conn: &iroh::endpoint::Connection,
+) -> Result<(iroh::endpoint::SendStream, String), String> {
+    let (send, mut recv) = tokio::time::timeout(
+        Duration::from_secs(PAIR_IO_TIMEOUT_SECS),
+        conn.accept_bi(),
+    )
+    .await
+    .map_err(|_| "accept timed out".to_string())?
+    .map_err(|e| format!("accept_bi failed: {e}"))?;
+    let bytes = tokio::time::timeout(
+        Duration::from_secs(PAIR_IO_TIMEOUT_SECS),
+        recv.read_to_end(PAIR_BEACON_MAX_BYTES),
+    )
+    .await
+    .map_err(|_| "beacon read timed out".to_string())?
+    .map_err(|e| format!("beacon read failed: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| "beacon is not JSON".to_string())?;
+    let token = v
+        .get("token")
+        .and_then(|t| t.as_str())
+        .map(|t| t.to_lowercase())
+        .ok_or_else(|| "beacon has no token".to_string())?;
+    Ok((send, token))
+}
+
+async fn write_response(send: &mut iroh::endpoint::SendStream, resp: &str) -> Result<(), String> {
+    tokio::time::timeout(
+        Duration::from_secs(PAIR_IO_TIMEOUT_SECS),
+        send.write_all(resp.as_bytes()),
+    )
+    .await
+    .map_err(|_| "response write timed out".to_string())?
+    .map_err(|e| format!("response write failed: {e}"))?;
+    send.finish()
+        .map_err(|e| format!("response finish failed: {e}"))?;
+    Ok(())
+}
+
+fn parse_endpoint_id(hex: &str) -> Result<iroh::EndpointId, String> {
+    hex.trim()
+        .parse::<iroh::EndpointId>()
+        .map_err(|_| "node id must be 64 hex chars".to_string())
+}
+
+fn pair_target(node_hex: &str, relay_url: &str) -> Result<iroh::EndpointAddr, String> {
+    let id = parse_endpoint_id(node_hex)?;
+    let mut addr = iroh::EndpointAddr::new(id);
+    let relay = relay_url.trim();
+    if !relay.is_empty() {
+        let url: iroh::RelayUrl = relay
+            .parse()
+            .map_err(|_| "relay url is not a valid relay URL".to_string())?;
+        addr = addr.with_relay_url(url);
+    }
+    Ok(addr)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_irohapp_IrohBridge_pairAccept<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    alpn: JString<'local>,
+    tokens_json: JString<'local>,
+    callback: JObject<'local>,
+) -> jboolean {
+    let out = catch_unwind(AssertUnwindSafe(|| {
+        let alpn_str: String = env
+            .get_string(&alpn)
+            .map(|s| s.into())
+            .map_err(|e| format!("{e:?}"))?;
+        if alpn_str.is_empty() || alpn_str.len() > 64 {
+            return Err("alpn must be 1..64 chars".to_string());
+        }
+        let tokens_str: String = env
+            .get_string(&tokens_json)
+            .map(|s| s.into())
+            .map_err(|e| format!("{e:?}"))?;
+        let parsed: Vec<String> =
+            serde_json::from_str(&tokens_str).map_err(|_| "tokens must be a JSON string array".to_string())?;
+        if parsed.len() > 64 {
+            return Err("at most 64 pending tokens".to_string());
+        }
+        let set: HashSet<String> = parsed.into_iter().map(|t| t.to_lowercase()).collect();
+        let jvm = env.get_java_vm().map_err(|e| format!("{e:?}"))?;
+        let cb = env
+            .new_global_ref(&callback)
+            .map_err(|e| format!("{e:?}"))?;
+        let eng = ENGINE.lock().clone().ok_or_else(|| "engine not initialized, call initialize() first".to_string())?;
+        get_runtime().block_on(async {
+            if let Some(old) = PAIR_ROUTER.lock().take() {
+                let _ = old.shutdown().await;
+            }
+            let router = iroh::protocol::Router::builder(eng.endpoint.clone())
+                .accept(
+                    alpn_str.into_bytes(),
+                    PairAcceptHandler { jvm, callback: cb },
+                )
+                .spawn();
+            *PAIR_ROUTER.lock() = Some(router);
+            *pair_tokens().write() = set;
+            Ok::<_, String>(())
+        })
+    }));
+    match out {
+        Ok(Ok(())) => JNI_TRUE,
+        Ok(Err(msg)) => {
+            throw(&mut env, format!("pairAccept failed: {msg}"));
+            JNI_FALSE
+        }
+        Err(_) => {
+            throw(&mut env, "pairAccept panicked".to_string());
+            JNI_FALSE
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_irohapp_IrohBridge_pairStop<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) {
+    if let Some(router) = PAIR_ROUTER.lock().take() {
+        let _ = get_runtime().block_on(router.shutdown());
+    }
+    pair_tokens().write().clear();
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_irohapp_IrohBridge_pairDial<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    node_id_hex: JString<'local>,
+    relay_url: JString<'local>,
+    alpn: JString<'local>,
+    payload_json: JString<'local>,
+    timeout_secs: jni::sys::jint,
+) -> JString<'local> {
+    let out = catch_unwind(AssertUnwindSafe(|| {
+        let node_hex: String = env
+            .get_string(&node_id_hex)
+            .map(|s| s.into())
+            .map_err(|e| format!("{e:?}"))?;
+        let relay: String = env
+            .get_string(&relay_url)
+            .map(|s| s.into())
+            .map_err(|e| format!("{e:?}"))?;
+        let alpn_str: String = env
+            .get_string(&alpn)
+            .map(|s| s.into())
+            .map_err(|e| format!("{e:?}"))?;
+        if alpn_str.is_empty() || alpn_str.len() > 64 {
+            return Err("alpn must be 1..64 chars".to_string());
+        }
+        let payload: String = env
+            .get_string(&payload_json)
+            .map(|s| s.into())
+            .map_err(|e| format!("{e:?}"))?;
+        if payload.len() > PAIR_RESPONSE_MAX_BYTES {
+            return Err("payload too large".to_string());
+        }
+        let secs = (timeout_secs as u64).clamp(5, 300);
+        let target = pair_target(&node_hex, &relay)?;
+        let eng = ENGINE.lock().clone().ok_or_else(|| "engine not initialized, call initialize() first".to_string())?;
+        get_runtime().block_on(async {
+            let conn = tokio::time::timeout(
+                Duration::from_secs(secs),
+                eng.endpoint.connect(target, alpn_str.as_bytes()),
+            )
+            .await
+            .map_err(|_| "dial timed out".to_string())?
+            .map_err(|e| format!("dial failed: {e}"))?;
+            let (mut send, mut recv) = tokio::time::timeout(
+                Duration::from_secs(PAIR_IO_TIMEOUT_SECS),
+                conn.open_bi(),
+            )
+            .await
+            .map_err(|_| "open stream timed out".to_string())?
+            .map_err(|e| format!("open_bi failed: {e}"))?;
+            tokio::time::timeout(
+                Duration::from_secs(PAIR_IO_TIMEOUT_SECS),
+                send.write_all(payload.as_bytes()),
+            )
+            .await
+            .map_err(|_| "payload write timed out".to_string())?
+            .map_err(|e| format!("payload write failed: {e}"))?;
+            send
+                .finish()
+                .map_err(|e| format!("payload finish failed: {e}"))?;
+            let bytes = tokio::time::timeout(
+                Duration::from_secs(secs),
+                recv.read_to_end(PAIR_RESPONSE_MAX_BYTES),
+            )
+            .await
+            .map_err(|_| "response read timed out".to_string())?
+            .map_err(|e| format!("response read failed: {e}"))?;
+            Ok::<_, String>(String::from_utf8_lossy(&bytes).into_owned())
+        })
+    }));
+    match out {
+        Ok(Ok(resp)) => env.new_string(resp).unwrap_or_else(|_| null_string()),
+        Ok(Err(msg)) => {
+            throw(&mut env, format!("pairDial failed: {msg}"));
+            null_string()
+        }
+        Err(_) => {
+            throw(&mut env, "pairDial panicked".to_string());
+            null_string()
+        }
+    }
 }
