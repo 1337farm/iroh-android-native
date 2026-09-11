@@ -1,0 +1,69 @@
+name: farm-agent
+
+# Printer dial-back agent (docs: flashforge-farm/docs/usb-pairing.md).
+# Builds the farm-agent binary for the printer (ARMv7 Linux) and a host
+# test binary (x86_64 Linux), and attaches both to the tag release.
+#
+# Release flow: push tag agent-vX.Y.Z (must match farm-agent/Cargo.toml version).
+
+on:
+  push:
+    tags: ["agent-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    name: create release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Ensure release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.ref_name }}" >/dev/null 2>&1 || \
+            gh release create "${{ github.ref_name }}" \
+              --title "farm-agent ${{ github.ref_name }}" \
+              --notes "Printer dial-back agent for USB reverse-pairing (see flashforge-farm/docs/usb-pairing.md). Assets: ARMv7 Linux printer binary + x86_64 Linux host binary."
+
+  build:
+    name: build
+    needs: [create-release]
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - target: armv7-unknown-linux-gnueabihf
+            asset: farm-agent-armv7-unknown-linux-gnueabihf
+          - target: x86_64-unknown-linux-gnu
+            asset: farm-agent-x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install ARMv7 cross linker
+        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-linux-gnueabihf
+
+      - name: Build release binary
+        env:
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+        run: cargo build --release --manifest-path farm-agent/Cargo.toml --target ${{ matrix.target }}
+
+      - name: Run host tests
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo test --manifest-path farm-agent/Cargo.toml --target ${{ matrix.target }}
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            "farm-agent/target/${{ matrix.target }}/release/farm-agent#${{ matrix.asset }}" \
+            --clobber

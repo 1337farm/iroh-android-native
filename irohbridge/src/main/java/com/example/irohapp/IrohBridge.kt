@@ -13,6 +13,11 @@ interface IrohTransferListener {
     fun onFetchComplete(dir: String)
 }
 
+/** Callbacks for the USB reverse-pairing accept loop (ALPN farm/pair/0). */
+interface IPairListener {
+    fun onPairResult(peerNodeIdHex: String, tokenHex: String, ok: Boolean)
+}
+
 object IrohBridge {
     init {
         System.loadLibrary("native_iroh_engine")
@@ -44,6 +49,23 @@ object IrohBridge {
     external fun syncAnnounce(): String?
     external fun syncMerge(ticket: String): String?
     external fun knownPeers(): Array<String>
+
+    // USB reverse-pairing (farm/pair): accept pair-beacons from printers that
+    // dial this phone first. tokensJson is a JSON array of pending token hex
+    // strings; onPairResult fires per beacon (tokenHex empty when rejected).
+    external fun pairAccept(alpn: String, tokensJson: String, callback: IPairListener): Boolean
+    external fun pairStop()
+
+    // Dial a peer NodeId with an ALPN, send payloadJson, return the one-shot
+    // response string. Throws RuntimeException on transport failure.
+    // relayUrl empty = default relays. timeoutSecs clamped to 5..300.
+    external fun pairDial(
+        nodeIdHex: String,
+        relayUrl: String,
+        alpn: String,
+        payloadJson: String,
+        timeoutSecs: Int
+    ): String?
 
     @Deprecated("Use initialize() + modelFetch(); kept for compatibility. Now actually writes the file.")
     external fun initializeAndDownload(

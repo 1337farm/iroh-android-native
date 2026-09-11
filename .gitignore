@@ -7,3 +7,4 @@ native_iroh_engine/target/
 
 # local-only: NDK linker paths vary per machine (generated, see build_android.sh)
 native_iroh_engine/.cargo/
+farm-agent/target/
