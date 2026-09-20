@@ -5,6 +5,21 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Short commit hash baked into the human-readable versionName (forgerig
+// pattern: `git rev-parse --short=10 HEAD` with `dev` fallback so fresh
+// clones without git history and offline builds still configure).
+val gitCommitHash: String = try {
+    val proc = ProcessBuilder("git", "rev-parse", "--short=10", "HEAD")
+        .directory(rootProject.projectDir)
+        .redirectErrorStream(true)
+        .start()
+    val sha = proc.inputStream.bufferedReader().readText().trim()
+    proc.waitFor()
+    if (sha.matches(Regex("[0-9a-f]{10}"))) sha else "dev"
+} catch (e: Exception) {
+    "dev"
+}
+
 android {
     namespace = "com.example.irohapp"
     compileSdk = 34
@@ -14,7 +29,9 @@ android {
         minSdk = 26
         targetSdk = 34
         versionCode = 1
-        versionName = "1.0"
+        // Human-readable: the committing SHA beats a constant for debugging
+        // (forgerig pattern with `dev` fallback).
+        versionName = gitCommitHash
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
