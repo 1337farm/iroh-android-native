@@ -15,6 +15,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          # Full history so `git rev-parse --short=10 HEAD` (versionName)
+          # resolves to the committing SHA in CI.
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -36,6 +40,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          # Full history so `git rev-parse --short=10 HEAD` (versionName)
+          # resolves to the committing SHA in CI.
+          fetch-depth: 0
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -54,6 +62,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          # Full history so `git rev-parse --short=10 HEAD` (versionName)
+          # resolves to the committing SHA in CI.
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -128,6 +140,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          # Full history so `git rev-parse --short=10 HEAD` (versionName)
+          # resolves to the committing SHA in CI.
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5

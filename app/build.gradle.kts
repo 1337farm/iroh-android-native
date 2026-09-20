@@ -5,20 +5,24 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// Short commit hash baked into the human-readable versionName (forgerig
-// pattern: `git rev-parse --short=10 HEAD` with `dev` fallback so fresh
-// clones without git history and offline builds still configure).
-val gitCommitHash: String = try {
-    val proc = ProcessBuilder("git", "rev-parse", "--short=10", "HEAD")
-        .directory(rootProject.projectDir)
-        .redirectErrorStream(true)
-        .start()
-    val sha = proc.inputStream.bufferedReader().readText().trim()
-    proc.waitFor()
-    if (sha.matches(Regex("[0-9a-f]{10}"))) sha else "dev"
-} catch (e: Exception) {
-    "dev"
-}
+// Short commit hash baked into the human-readable versionName (forgerig +
+// gatekeeper-demo pattern: GITHUB_SHA first so CI resolves without git
+// history, `git rev-parse --short=10 HEAD` fallback for local builds, `dev`
+// fallback so fresh clones without git history and offline builds still
+// configure).
+val gitCommitHash: String = System.getenv("GITHUB_SHA")?.take(10)
+    ?.takeIf { it.matches(Regex("[0-9a-f]{10}")) }
+    ?: try {
+        val proc = ProcessBuilder("git", "rev-parse", "--short=10", "HEAD")
+            .directory(rootProject.projectDir)
+            .redirectErrorStream(true)
+            .start()
+        val sha = proc.inputStream.bufferedReader().readText().trim()
+        proc.waitFor()
+        if (sha.matches(Regex("[0-9a-f]{10}"))) sha else "dev"
+    } catch (e: Exception) {
+        "dev"
+    }
 
 android {
     namespace = "com.example.irohapp"
@@ -30,8 +34,8 @@ android {
         targetSdk = 34
         versionCode = 1
         // Human-readable: the committing SHA beats a constant for debugging
-        // (forgerig pattern with `dev` fallback).
-        versionName = gitCommitHash
+        // (forgerig + gatekeeper-demo pattern with `dev` fallback).
+        versionName = "1.0-$gitCommitHash"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
